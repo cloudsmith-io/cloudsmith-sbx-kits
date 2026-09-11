@@ -1,0 +1,74 @@
+schemaVersion: "2"
+version: "0.1.0"
+sourceURL: https://github.com/cloudsmith-io/cloudsmith-sbx-kits
+licenses:
+  - Apache-2.0
+kind: mixin
+name: cloudsmith-cli
+displayName: Cloudsmith CLI
+description: Installs the cloudsmith CLI via Cloudsmith's verified installer, with a proxy-injected API key.
+
+# Arguments are substituted before shell parsing; keep the pattern restrictive.
+args:
+  cli-version:
+    default: "1.27.0"
+    description: cloudsmith CLI version to install, a release number or "latest"
+    pattern: '^(latest|[0-9]+\.[0-9]+\.[0-9]+)$'
+
+permissions:
+  network:
+    allow:
+      - api.cloudsmith.io
+      - dl.cloudsmith.io
+      # CLI uploads use pre-signed URLs; never inject the API key here.
+      - cloudsmith-package-uploads-prd.s3-accelerate.amazonaws.com
+
+credentials:
+  - service: cloudsmith-api-key
+    description: Cloudsmith API key for the cloudsmith CLI (use a least-privilege service account)
+    required: false
+    apiKey:
+      name: CLOUDSMITH_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: api.cloudsmith.io
+          header: X-Api-Key
+          format: "%s"
+
+agentInstructions:
+  content: |
+    ## Cloudsmith CLI
+
+    The `cloudsmith` CLI is installed. `CLOUDSMITH_API_KEY` holds a
+    placeholder; the sandbox proxy adds the real API key to requests to
+    api.cloudsmith.io. Do not pass `-k` or write credentials to config.
+
+    Use `cloudsmith --version`, `cloudsmith whoami` and
+    `cloudsmith list packages ORG/REPO`. API operations have the bound key's
+    permissions. Report authentication failures to the host user rather than
+    supplying a key. Package-download credentials are provided separately by
+    the cloudsmith-repo kit.
+
+setup:
+  install:
+    # Pin the installer independently of the requested CLI release.
+    - command: |
+        set -eu
+        INSTALLER_VERSION=0.1.2
+        INSTALLER_SHA256="b2183b9e245ca1cf0685a9090cfc6d0bba7266c4e4c43d8c3be0f17aa00bc5be"
+        tmpdir=$(mktemp -d)
+        trap 'rm -f "$tmpdir/cli.sh" "$tmpdir/install.env"; rmdir "$tmpdir"' EXIT
+        trap 'exit 1' HUP INT TERM
+        curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+          --connect-timeout 15 --max-time 120 --retry 2 \
+          -o "$tmpdir/cli.sh" \
+          "https://dl.cloudsmith.io/public/cloudsmith/cloudsmith-cli-install-script/raw/versions/${INSTALLER_VERSION}/cli.sh"
+        printf '%s  %s\n' "$INSTALLER_SHA256" "$tmpdir/cli.sh" | sha256sum -c -
+        sh "$tmpdir/cli.sh" --version '${{ kit.args.cli-version }}' \
+          --install-root /opt/cloudsmith-cli --output-file "$tmpdir/install.env"
+        exe=$(awk -F= '$1 == "executable" { sub(/^[^=]*=/, ""); print; exit }' "$tmpdir/install.env")
+        [ -x "$exe" ] || { echo "[cloudsmith-cli] Installer reported no executable." >&2; exit 1; }
+        ln -sfn "$exe" /usr/local/bin/cloudsmith
+        cloudsmith --version
+      user: "0"
+      description: Install the cloudsmith CLI with Cloudsmith's pinned installer script

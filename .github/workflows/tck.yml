@@ -1,0 +1,105 @@
+name: Kit TCK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tck-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: shellcheck scripts/*.sh
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      kits: ${{ steps.collect.outputs.kits }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Collect kit directories
+        id: collect
+        run: |
+          kits=$(for f in */spec.yaml; do [ -f "$f" ] && dirname "$f"; done | sort -u | jq -R . | jq -sc .)
+          echo "kits=${kits}" >> "$GITHUB_OUTPUT"
+          echo "Kits: ${kits}"
+
+  # Consume the published TCK pinned in go.mod, without a vendored harness.
+  tck:
+    needs: discover
+    strategy:
+      fail-fast: false
+      matrix:
+        kit: ${{ fromJson(needs.discover.outputs.kits) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run the TCK for ${{ matrix.kit }}
+        env:
+          KIT_DIR: ${{ matrix.kit }}
+        run: ./scripts/test-kit.sh "$KIT_DIR" -timeout 15m
+
+  # Validate against the CLI too: it releases separately from the TCK module.
+  validate:
+    needs: discover
+    strategy:
+      fail-fast: false
+      matrix:
+        kit: ${{ fromJson(needs.discover.outputs.kits) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install sbx
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLI_ONLY: "1"
+        run: ./scripts/install-sbx.sh >> "$GITHUB_PATH"
+
+      - name: sbx kit validate
+        env:
+          KIT_DIR: ${{ matrix.kit }}
+        run: sbx kit validate "./$KIT_DIR"
+
+      - name: sbx kit inspect
+        env:
+          KIT_DIR: ${{ matrix.kit }}
+        run: sbx kit inspect "./$KIT_DIR"
+
+  # Credentialed sandbox tests execute only trusted main-branch code.
+  e2e:
+    needs: discover
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/e2e.yml
+    with:
+      kits: ${{ needs.discover.outputs.kits }}
+    secrets: inherit

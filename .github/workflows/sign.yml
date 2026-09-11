@@ -1,0 +1,85 @@
+name: Sign kits
+
+# Merge the verified signature bundles before tagging; later kit edits
+# invalidate the signatures.
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: sign-kits
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install sbx
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLI_ONLY: "1"
+        run: ./scripts/install-sbx.sh >> "$GITHUB_PATH"
+
+      - name: Sign each kit
+        run: |
+          set -euo pipefail
+          for spec in */spec.yaml; do
+            kit=$(dirname "$spec")
+            echo "==> signing ${kit}"
+            sbx kit sign "./${kit}"
+          done
+
+      - name: Verify each signature before committing it
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for spec in */spec.yaml; do
+            kit=$(dirname "$spec")
+            echo "==> verifying ${kit}"
+            sbx kit verify \
+              --certificate-identity "https://github.com/${REPOSITORY}/.github/workflows/sign.yml@refs/heads/main" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "./${kit}"
+          done
+
+      - name: Open a pull request with the signature bundles
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          BASE: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ./*/kit.sig.bundle
+          if git diff --cached --quiet; then
+            echo "No signature changes to commit."
+            exit 0
+          fi
+
+          branch="sign/kits-${RUN_ID}"
+          git checkout -b "$branch"
+          git commit -m "Sign kits (keyless, bound to the sign workflow identity)"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" "$branch"
+
+          gh pr create --repo "$REPOSITORY" --base "$BASE" --head "$branch" \
+            --title "Sign kits" \
+            --body "Signature bundles from the \`Sign kits\` workflow, run ${RUN_ID}.
+
+          Each signature is keyless (Sigstore Fulcio + Rekor), bound to this repository's \`sign.yml\` workflow identity, and was verified in the run before this pull request was opened.
+
+          Squash-merge, then tag the resulting commit \`<kit>-v<semver>\`. The signature covers the exact bytes of each \`spec.yaml\` and \`files/\`, so any edit after this merge invalidates it."
