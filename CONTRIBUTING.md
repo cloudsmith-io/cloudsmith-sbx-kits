@@ -111,7 +111,29 @@ keep the tags independent even when one pull request changes both.
    kit keyless through Sigstore, verifies each signature, and commits the
    `kit.sig.bundle` sidecars. Signing must come before the tag: the signature
    covers the exact bytes, so any later edit invalidates it.
-4. Tag the signing commit and push the tag.
+4. Tag the signing commit `<kit>-v<semver>` and push the tag.
+
+Pushing the tag starts `.github/workflows/publish.yml`, which publishes the kit
+to Cloudsmith as an OCI artifact at
+`docker.cloudsmith.io/<namespace>/<repo>/<kit>-kit:v<semver>`. The workflow
+authenticates with OIDC, so no API key is stored. It needs three repository
+variables, and skips with a notice until all three are set:
+
+| Variable | Value |
+| --- | --- |
+| `CLOUDSMITH_NAMESPACE` | the Cloudsmith workspace |
+| `CLOUDSMITH_REPO` | the repository holding the kit artifacts |
+| `CLOUDSMITH_SERVICE_SLUG` | a service account whose OIDC provider trusts `repo:cloudsmith-io/cloudsmith-sbx-kits:*` |
+
+The workflow refuses a tag whose version disagrees with the kit's `spec.yaml`,
+and skips a tag already published, because Cloudsmith repositories are
+immutable.
+
+**The published artifact is not signed yet.** `sbx kit push --sign` needs its
+own `sbx login`, which authenticates against Docker Hub. Whether it works
+against another registry is untested, so the push runs without it rather than
+failing a release on an unverified flag. Signed git tags remain the verified
+path — see `sign.yml`. Probe `--sign` against Cloudsmith before relying on it.
 
 
 ## Need Help?

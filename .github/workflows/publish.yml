@@ -1,0 +1,150 @@
+name: Publish kit artifacts
+
+# Publishes a kit to Cloudsmith as an OCI artifact, so `--kit` can consume it
+# without git. The tag selects the kit: `cloudsmith-repo-v0.1.0` publishes
+# cloudsmith-repo at version 0.1.0.
+#
+# Authentication is OIDC. No API key is stored. The job mints a GitHub OIDC
+# token, `cloudsmith whoami` exchanges it for a session against the Cloudsmith
+# service account, and the credential helper authenticates the registry push.
+#
+# Turn this on by setting three repository variables:
+#
+#   CLOUDSMITH_NAMESPACE     the Cloudsmith workspace, e.g. cloudsmith
+#   CLOUDSMITH_REPO          the repository, e.g. sbx-kits
+#   CLOUDSMITH_SERVICE_SLUG  a service account whose OIDC provider trusts
+#                            repo:cloudsmith-io/cloudsmith-sbx-kits:*
+#
+# Until all three are set the job skips with a notice, so a tag never fails the
+# build over infrastructure that does not exist yet.
+
+on:
+  push:
+    tags:
+      - "*-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Kit tag to publish, e.g. cloudsmith-repo-v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # mints the OIDC token the Cloudsmith session is exchanged for
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
+      CLOUDSMITH_REPO: ${{ vars.CLOUDSMITH_REPO }}
+      CLOUDSMITH_SERVICE_SLUG: ${{ vars.CLOUDSMITH_SERVICE_SLUG }}
+      CLOUDSMITH_ORG: ${{ vars.CLOUDSMITH_NAMESPACE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that Cloudsmith publishing is configured
+        id: config
+        run: |
+          if [ -n "$CLOUDSMITH_NAMESPACE" ] && [ -n "$CLOUDSMITH_REPO" ] && [ -n "$CLOUDSMITH_SERVICE_SLUG" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping publish — set the CLOUDSMITH_NAMESPACE, CLOUDSMITH_REPO and CLOUDSMITH_SERVICE_SLUG repository variables to enable it."
+          fi
+
+      # The tag carries both the kit and the version: <kit>-v<semver>. Strip the
+      # trailing -v<semver> to get the kit directory.
+      - name: Resolve the kit and version from the tag
+        id: kit
+        if: steps.config.outputs.configured == 'true'
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^(.+)-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::Tag '${TAG}' is not <kit>-v<semver>, e.g. cloudsmith-repo-v0.1.0"
+            exit 1
+          fi
+          kit="${BASH_REMATCH[1]}"
+          version="${BASH_REMATCH[2]}"
+
+          if [ ! -f "${kit}/spec.yaml" ]; then
+            echo "::error::Tag '${TAG}' names kit '${kit}', which has no ${kit}/spec.yaml"
+            exit 1
+          fi
+
+          # The spec's own version becomes an annotation on the artifact, so a
+          # tag that disagrees with it would publish a mislabelled kit.
+          spec_version=$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' "${kit}/spec.yaml" | head -1)
+          if [ "$spec_version" != "$version" ]; then
+            echo "::error::Tag '${TAG}' says ${version}, but ${kit}/spec.yaml says '${spec_version}'. Bump the spec before tagging."
+            exit 1
+          fi
+
+          echo "name=${kit}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Publishing ${kit} v${version}"
+
+      - name: Install sbx
+        if: steps.config.outputs.configured == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/install-sbx.sh >> "$GITHUB_PATH"
+
+      # Cloudsmith's own standalone installer, pinned by version and SHA256 and
+      # run from a file rather than piped into sh. The cloudsmith-cli kit pins
+      # the same installer for the sandbox; bump both together.
+      - name: Install the cloudsmith CLI
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          INSTALLER_VERSION=0.1.2
+          INSTALLER_SHA256="b2183b9e245ca1cf0685a9090cfc6d0bba7266c4e4c43d8c3be0f17aa00bc5be"
+          curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/cloudsmith-cli-install.sh \
+            "https://dl.cloudsmith.io/public/cloudsmith/cloudsmith-cli-install-script/raw/versions/${INSTALLER_VERSION}/cli.sh"
+          echo "${INSTALLER_SHA256}  /tmp/cloudsmith-cli-install.sh" | sha256sum -c -
+          sh /tmp/cloudsmith-cli-install.sh --version latest \
+            --install-root "${RUNNER_TEMP}/cloudsmith-cli" --output-file /tmp/cloudsmith-cli-install.env
+          exe=$(awk -F= '$1 == "executable" { sub(/^[^=]*=/, ""); print; exit }' /tmp/cloudsmith-cli-install.env)
+          mkdir -p "${HOME}/.local/bin"
+          ln -sfn "$exe" "${HOME}/.local/bin/cloudsmith"
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+
+      # buildx supplies `imagetools inspect` for the already-published check
+      # below. Its binary cache stays off: this job publishes an artifact, and a
+      # poisoned cache entry would reach what it pushes.
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        if: steps.config.outputs.configured == 'true'
+        with:
+          cache-binary: false
+
+      - name: Authenticate to Cloudsmith with OIDC
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          cloudsmith whoami
+          cloudsmith credential-helper install docker
+
+      # Cloudsmith repositories are immutable, so a re-run of an already
+      # published tag must not fail. `imagetools inspect` runs after the
+      # credential helper is installed, so a non-zero exit means absent rather
+      # than unauthorized.
+      - name: Push the kit artifact
+        if: steps.config.outputs.configured == 'true'
+        env:
+          KIT_DIR: ${{ steps.kit.outputs.name }}
+          KIT_VERSION: ${{ steps.kit.outputs.version }}
+        run: |
+          set -euo pipefail
+          ref="docker.cloudsmith.io/${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPO}/${KIT_DIR}-kit:v${KIT_VERSION}"
+          if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+            echo "skip (already published): ${ref}"
+            exit 0
+          fi
+          sbx kit push "./${KIT_DIR}" "$ref"
+          echo "Published ${ref}"
