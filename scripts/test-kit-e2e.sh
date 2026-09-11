@@ -13,17 +13,19 @@
 # Prerequisites:
 #   - sbx on PATH. Install it from https://github.com/docker/sbx-releases.
 #   - The scoped daemon must be signed in to Docker Hub:
-#         sbx --app-name cloudsmith-kits-tck login
+#         sbx --app-name cs-kits login
 #
 # Environment overrides:
-#   APP_NAME  scoped app name. Keep it in sync with tck/e2e_test.go. sbx
-#             rejects a name longer than 20 characters.
+#   APP_NAME  scoped app name. Keep it in sync with tck/e2e_test.go, and keep
+#             it very short: the name goes into the daemon's containerd socket
+#             path, which cannot exceed 104 bytes. On a GitHub runner the rest
+#             of that path costs 88 bytes, leaving 16 for the name.
 #   POLICY    network policy for the scoped daemon. Default `deny-all`.
 #             Set POLICY= to leave the current policy alone.
 
 set -euo pipefail
 
-APP_NAME=${APP_NAME:-cloudsmith-kits-tck}
+APP_NAME=${APP_NAME:-cs-kits}
 POLICY=${POLICY-deny-all}
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

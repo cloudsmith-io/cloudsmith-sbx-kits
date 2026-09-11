@@ -77,7 +77,7 @@ jobs:
           user_clean=$(printf '%s' "$USERNAME" | tr -d '[:space:]')
           token_clean=$(printf '%s' "$TOKEN" | tr -d '[:space:]')
           printf '%s' "$token_clean" \
-            | sbx --app-name cloudsmith-kits-tck login --username "$user_clean" --password-stdin
+            | sbx --app-name cs-kits login --username "$user_clean" --password-stdin
 
       - name: Run e2e for ${{ matrix.kit }}
         if: steps.creds.outputs.configured == 'true'
@@ -87,4 +87,4 @@ jobs:
 
       - name: Sign out of Docker Hub
         if: always() && steps.creds.outputs.configured == 'true'
-        run: sbx --app-name cloudsmith-kits-tck logout --yes || true
+        run: sbx --app-name cs-kits logout --yes || true

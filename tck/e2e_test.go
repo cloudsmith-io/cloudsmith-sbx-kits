@@ -23,8 +23,11 @@ import (
 // never touches the day-to-day sbx state. Keep it in sync with
 // scripts/test-kit-e2e.sh.
 //
-// sbx rejects an app name longer than 20 characters, so keep it short.
-const appName = "cloudsmith-kits-tck"
+// Keep it very short. sbx rejects a name over 20 characters, but the real
+// limit is tighter: the name goes into the daemon's containerd socket path,
+// and a unix socket path cannot exceed 104 bytes. On a GitHub runner the rest
+// of that path already costs 88 bytes, leaving 16 for the name.
+const appName = "cs-kits"
 
 func TestE2EKit(t *testing.T) {
 	kitPath := os.Getenv("KIT_UNDER_TEST")
