@@ -1,0 +1,70 @@
+name: Sign kits
+
+# Signs every kit keyless with Sigstore (Fulcio + Rekor), bound to this
+# workflow's own GitHub OIDC identity. No private key exists to store, rotate
+# or lose.
+#
+# Run this before tagging a release that changes any spec.yaml or files/. The
+# signature covers those exact bytes, so a later edit invalidates the committed
+# bundle. Tag only after the signing commit lands.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  id-token: write # mints the ambient OIDC token that keyless signing needs
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The commit step pushes with an explicit token instead, so no
+          # credential is left behind in .git/config.
+          persist-credentials: false
+
+      - name: Install sbx
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/install-sbx.sh >> "$GITHUB_PATH"
+
+      - name: Sign each kit
+        run: |
+          set -euo pipefail
+          for spec in */spec.yaml; do
+            kit=$(dirname "$spec")
+            echo "==> signing ${kit}"
+            sbx kit sign "./${kit}"
+          done
+
+      - name: Verify each signature before committing it
+        run: |
+          set -euo pipefail
+          for spec in */spec.yaml; do
+            kit=$(dirname "$spec")
+            echo "==> verifying ${kit}"
+            sbx kit verify \
+              --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "./${kit}"
+          done
+
+      - name: Commit the signature bundles
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ./*/kit.sig.bundle
+          if git diff --cached --quiet; then
+            echo "No signature changes to commit."
+            exit 0
+          fi
+          git commit -m "Sign kits (keyless, bound to the sign workflow identity)"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" "HEAD:${BRANCH}"

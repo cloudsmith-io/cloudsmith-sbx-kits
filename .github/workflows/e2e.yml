@@ -1,0 +1,90 @@
+name: Kit e2e
+
+# Reusable end-to-end runner. It installs a real sbx CLI, signs the scoped
+# daemon in to Docker Hub, and runs scripts/test-kit-e2e.sh for each kit under
+# the deny-all network policy.
+#
+# Docker Hub holds the sandbox template image the sandbox boots from, so the
+# run needs a credential. Set the DOCKERHUB_USERNAME variable and the
+# DOCKERHUB_TOKEN secret on the repository to turn this job on. Without them
+# every kit is skipped with a notice, which keeps the build green while the
+# TCK job still covers spec and container behaviour.
+
+on:
+  workflow_call:
+    inputs:
+      kits:
+        description: JSON array of kit directories to test.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        kit: ${{ fromJson(inputs.kits) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check for a Docker Hub credential
+        id: creds
+        env:
+          USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          KIT_DIR: ${{ matrix.kit }}
+        run: |
+          if [ -n "$USERNAME" ] && [ -n "$TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping e2e for ${KIT_DIR} — set the DOCKERHUB_USERNAME variable and the DOCKERHUB_TOKEN secret to enable it."
+          fi
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.creds.outputs.configured == 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Enable KVM access
+        if: steps.creds.outputs.configured == 'true'
+        run: |
+          sudo chmod 666 /dev/kvm
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install sbx
+        if: steps.creds.outputs.configured == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/install-sbx.sh >> "$GITHUB_PATH"
+
+      - name: Sign the scoped daemon in to Docker Hub
+        if: steps.creds.outputs.configured == 'true'
+        env:
+          USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          # GitHub keeps any whitespace pasted into the secret editor, and sbx
+          # strips only a trailing newline. Hub usernames and tokens hold no
+          # whitespace, so removing all of it cannot corrupt a real value.
+          user_clean=$(printf '%s' "$USERNAME" | tr -d '[:space:]')
+          token_clean=$(printf '%s' "$TOKEN" | tr -d '[:space:]')
+          printf '%s' "$token_clean" \
+            | sbx --app-name cloudsmith-sbx-kits-tck login --username "$user_clean" --password-stdin
+
+      - name: Run e2e for ${{ matrix.kit }}
+        if: steps.creds.outputs.configured == 'true'
+        env:
+          KIT_DIR: ${{ matrix.kit }}
+        run: ./scripts/test-kit-e2e.sh "$KIT_DIR"
+
+      - name: Sign out of Docker Hub
+        if: always() && steps.creds.outputs.configured == 'true'
+        run: sbx --app-name cloudsmith-sbx-kits-tck logout --yes || true

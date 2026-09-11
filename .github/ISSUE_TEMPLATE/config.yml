@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Cloudsmith Documentation
+    url: https://docs.cloudsmith.com
+    about: Read the Cloudsmith documentation
+  - name: Docker Sandboxes Documentation
+    url: https://docs.docker.com/ai/sandboxes/
+    about: Read the Docker Sandboxes and kit documentation
+  - name: Cloudsmith Support
+    url: https://cloudsmith.io/support/
+    about: Contact Cloudsmith support for account-specific issues
