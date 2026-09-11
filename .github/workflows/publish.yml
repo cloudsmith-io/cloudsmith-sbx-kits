@@ -1,0 +1,131 @@
+name: Publish kit artifacts
+
+on:
+  push:
+    tags: ["*-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing kit tag, e.g. cloudsmith-repo-v0.1.0
+        required: true
+        type: string
+      replace_existing:
+        description: Explicitly replace an existing Cloudsmith version during an authorized release repair
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
+      CLOUDSMITH_REPO: ${{ vars.CLOUDSMITH_REPO }}
+      CLOUDSMITH_SERVICE_SLUG: ${{ vars.CLOUDSMITH_SERVICE_SLUG }}
+      CLOUDSMITH_ORG: ${{ vars.CLOUDSMITH_NAMESPACE }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+      REPOSITORY: ${{ github.repository }}
+      REPLACE_EXISTING: ${{ github.event_name == 'workflow_dispatch' && inputs.replace_existing || false }}
+    steps:
+      - name: Check release inputs
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^cloudsmith-(repo|cli|dependency-firewall)-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
+            { echo "::error::Expected a known kit tag with a stable semantic version"; exit 1; }
+          for value in "$CLOUDSMITH_NAMESPACE" "$CLOUDSMITH_REPO" "$CLOUDSMITH_SERVICE_SLUG"; do
+            [[ "$value" =~ ^[a-z0-9][a-z0-9_-]*$ ]] ||
+              { echo "::error::Configure all three Cloudsmith publishing variables with valid slugs"; exit 1; }
+          done
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a release from main
+        run: git merge-base --is-ancestor HEAD origin/main
+
+      - name: Install sbx
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLI_ONLY: "1"
+        run: ./scripts/install-sbx.sh >> "$GITHUB_PATH"
+
+      - name: Validate release and verify signed source
+        id: kit
+        run: |
+          set -euo pipefail
+          kit="${TAG%-v*}"
+          version="${TAG##*-v}"
+          sbx kit validate "./$kit"
+          sbx kit inspect "./$kit" --json |
+            jq -e --arg kit "$kit" --arg version "$version" '.name == $kit and .version == $version' >/dev/null
+          sbx kit verify \
+            --certificate-identity "https://github.com/${REPOSITORY}/.github/workflows/sign.yml@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com "./$kit"
+          echo "name=$kit" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Cloudsmith CLI
+        run: |
+          set -euo pipefail
+          mkdir -p .release-tools
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+            --connect-timeout 15 --max-time 120 --retry 2 -o .release-tools/install.sh \
+            https://dl.cloudsmith.io/public/cloudsmith/cloudsmith-cli-install-script/raw/versions/0.1.2/cli.sh
+          echo "b2183b9e245ca1cf0685a9090cfc6d0bba7266c4e4c43d8c3be0f17aa00bc5be  .release-tools/install.sh" | sha256sum -c -
+          sh .release-tools/install.sh --version 1.27.0 \
+            --install-root "$PWD/.release-tools/cloudsmith" --output-file .release-tools/install.env
+          exe=$(awk -F= '$1 == "executable" { sub(/^[^=]*=/, ""); print; exit }' .release-tools/install.env)
+          [ -x "$exe" ]
+          dirname "$exe" >> "$GITHUB_PATH"
+
+      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+        with:
+          version: "1.3.3"
+
+      - name: Authenticate to Cloudsmith with OIDC
+        run: |
+          cloudsmith whoami
+          cloudsmith credential-helper install docker
+          command -v docker-credential-cloudsmith
+
+      - name: Push the kit artifact
+        env:
+          KIT_DIR: ${{ steps.kit.outputs.name }}
+          KIT_VERSION: ${{ steps.kit.outputs.version }}
+        run: |
+          set -euo pipefail
+          ref="docker.cloudsmith.io/${CLOUDSMITH_NAMESPACE}/${CLOUDSMITH_REPO}/${KIT_DIR}-kit:v${KIT_VERSION}"
+          if oras manifest fetch --descriptor "$ref" > .release-tools/descriptor.json 2> .release-tools/registry-error; then
+            if [ "$REPLACE_EXISTING" != true ]; then
+              echo "::error::${ref} already exists. Release tags are immutable; cut a new version."
+              exit 1
+            fi
+            previous_digest=$(jq -er '.digest' .release-tools/descriptor.json)
+            [[ "$previous_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            printf '::warning::Explicitly replacing %s (previous digest: %s)\n' "$ref" "$previous_digest"
+          elif ! grep -qiE 'manifest unknown|name unknown|MANIFEST_UNKNOWN|NAME_UNKNOWN|404 Not Found' .release-tools/registry-error &&
+               ! grep -Fxq "Error response from registry: failed to find \"$ref\": $ref: not found" .release-tools/registry-error; then
+            cat .release-tools/registry-error >&2
+            exit 1
+          fi
+          sbx kit push --sign "./${KIT_DIR}" "$ref"
+          digest=$(oras manifest fetch --descriptor "$ref" | jq -er '.digest')
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          sbx kit verify \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${ref%:*}@${digest}"
+          printf 'Published and verified %s@%s\n' "${ref%:*}" "$digest" >> "$GITHUB_STEP_SUMMARY"

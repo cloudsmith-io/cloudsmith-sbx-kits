@@ -1,0 +1,57 @@
+schemaVersion: "2"
+version: "0.1.0"
+sourceURL: https://github.com/cloudsmith-io/cloudsmith-sbx-kits
+licenses:
+  - Apache-2.0
+kind: mixin
+name: cloudsmith-dependency-firewall
+displayName: Cloudsmith dependency firewall
+description: Denies named public package registries at the sandbox proxy.
+
+permissions:
+  network:
+    deny:
+      # PyPI
+      - pypi.org
+      - files.pythonhosted.org
+      # npm and Yarn
+      - registry.npmjs.org
+      - registry.npmjs.com
+      - registry.yarnpkg.com
+      # Go module mirror
+      - proxy.golang.org
+      # crates.io
+      - index.crates.io
+      - static.crates.io
+      - crates.io
+      # Maven Central
+      - repo1.maven.org
+      - repo.maven.apache.org
+      # NuGet
+      - api.nuget.org
+      - www.nuget.org
+      - globalcdn.nuget.org
+      - azuresearch-usnc.nuget.org
+      - azuresearch-ussc.nuget.org
+      # Docker Hub
+      - registry-1.docker.io
+      - auth.docker.io
+      - production.cloudfront.docker.com
+      - production.cloudflare.docker.com
+      - index.docker.io
+
+agentInstructions:
+  content: |
+    ## Cloudsmith: public registries denied
+
+    This kit denies the named PyPI, npm, Yarn, Go mirror, crates.io, Maven
+    Central, NuGet and Docker Hub endpoints. Use the Cloudsmith repository
+    configured by cloudsmith-repo. Other hosts remain subject to the
+    composed sandbox policy; this is not a repository-only allowlist.
+
+    Do not work around a failed package download by changing registry
+    settings or fetching from a direct URL or git. Report the ecosystem,
+    package, version, host and status instead: 403 "quarantined" is a
+    Cloudsmith decision, 404 means missing content or incorrect configuration,
+    and "Blocked by network policy" is a sandbox denial. Do not include
+    token-bearing or pre-signed URLs in reports.

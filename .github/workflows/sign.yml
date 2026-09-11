@@ -1,0 +1,138 @@
+name: Sign kits
+
+# Merge the verified signature bundles before tagging; later kit edits
+# invalidate the signatures.
+
+on:
+  workflow_dispatch:
+    inputs:
+      amend_release:
+        description: Prepare an amended signed commit and signed tags as a Git bundle, without pushing
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: sign-kits
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install sbx
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLI_ONLY: "1"
+        run: ./scripts/install-sbx.sh >> "$GITHUB_PATH"
+
+      - name: Sign each kit
+        run: |
+          set -euo pipefail
+          for spec in */spec.yaml; do
+            kit=$(dirname "$spec")
+            echo "==> signing ${kit}"
+            sbx kit sign "./${kit}"
+          done
+
+      - name: Verify each signature before committing it
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for spec in */spec.yaml; do
+            kit=$(dirname "$spec")
+            echo "==> verifying ${kit}"
+            sbx kit verify \
+              --certificate-identity "https://github.com/${REPOSITORY}/.github/workflows/sign.yml@refs/heads/main" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "./${kit}"
+          done
+
+      - name: Commit signatures and prepare delivery
+        env:
+          GH_TOKEN: ${{ secrets.CLOUDSMITH_BOT_TOKEN }}
+          BOT_NAME: ${{ secrets.CLOUDSMITH_BOT_NAME }}
+          BOT_EMAIL: ${{ secrets.CLOUDSMITH_BOT_EMAIL }}
+          BOT_SIGNING_KEY: ${{ secrets.CLOUDSMITH_BOT_SIGNING_KEY }}
+          REPOSITORY: ${{ github.repository }}
+          BASE: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          AMEND_RELEASE: ${{ inputs.amend_release }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?Set CLOUDSMITH_BOT_TOKEN}"
+          : "${BOT_NAME:?Set CLOUDSMITH_BOT_NAME}"
+          : "${BOT_EMAIL:?Set CLOUDSMITH_BOT_EMAIL}"
+          : "${BOT_SIGNING_KEY:?Set CLOUDSMITH_BOT_SIGNING_KEY}"
+          umask 077
+          signing_dir=$(mktemp -d)
+          trap 'rm -f "$signing_dir/key" "$signing_dir/key.pub" "$signing_dir/allowed_signers"; rmdir "$signing_dir"' EXIT
+          printf '%s\n' "$BOT_SIGNING_KEY" > "$signing_dir/key"
+          unset BOT_SIGNING_KEY
+          ssh-keygen -y -P "" -f "$signing_dir/key" > "$signing_dir/key.pub"
+          git config user.name "$BOT_NAME"
+          git config user.email "$BOT_EMAIL"
+          git config gpg.format ssh
+          git config gpg.ssh.program ssh-keygen
+          git config user.signingkey "$signing_dir/key"
+          git config commit.gpgsign true
+          printf '%s %s\n' "$BOT_EMAIL" "$(cat "$signing_dir/key.pub")" > "$signing_dir/allowed_signers"
+          git config gpg.ssh.allowedSignersFile "$signing_dir/allowed_signers"
+          git add ./*/kit.sig.bundle
+          if git diff --cached --quiet && [ "$AMEND_RELEASE" != true ]; then
+            echo "No signature changes to commit."
+            exit 0
+          fi
+
+          if [ "$AMEND_RELEASE" = true ]; then
+            git commit --amend --no-edit
+            git verify-commit HEAD
+            tags=()
+            for kit in cloudsmith-repo cloudsmith-cli cloudsmith-dependency-firewall; do
+              version=$(sbx kit inspect "./$kit" --json | jq -er '.version')
+              [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+              tag="${kit}-v${version}"
+              git tag --sign --force "$tag" -m "Release ${kit} v${version}"
+              git verify-tag "$tag"
+              tags+=("refs/tags/$tag")
+            done
+            git bundle create "$RUNNER_TEMP/signed-release.bundle" HEAD "${tags[@]}"
+            printf 'Prepared signed commit %s and signed release tags for manual review. No refs were pushed.\n' \
+              "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          branch="sign/kits-${RUN_ID}"
+          git checkout -b "$branch"
+          git commit -m "Sign kits (keyless, bound to the sign workflow identity)"
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            push "https://github.com/${REPOSITORY}.git" "$branch"
+
+          gh pr create --repo "$REPOSITORY" --base "$BASE" --head "$branch" \
+            --title "Sign kits" \
+            --body "Signature bundles from the \`Sign kits\` workflow, run ${RUN_ID}.
+
+          Each signature is keyless (Sigstore Fulcio + Rekor), bound to this repository's \`sign.yml\` workflow identity, and was verified in the run before this pull request was opened.
+
+          Squash-merge, then tag the resulting commit \`<kit>-v<semver>\`. The signature covers the exact bytes of each \`spec.yaml\` and \`files/\`, so any edit after this merge invalidates it."
+
+      - name: Upload signed release bundle
+        if: inputs.amend_release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-release
+          path: ${{ runner.temp }}/signed-release.bundle
+          if-no-files-found: error
+          retention-days: 7

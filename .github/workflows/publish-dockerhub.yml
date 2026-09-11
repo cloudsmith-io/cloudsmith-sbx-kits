@@ -1,0 +1,117 @@
+name: Publish kits to Docker Hub
+
+on:
+  push:
+    tags: ["*-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing kit tag, e.g. cloudsmith-repo-v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-dockerhub-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || vars.DOCKERHUB_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DOCKERHUB_PUBLISH_USER: ${{ secrets.DOCKERHUB_PUBLISH_USER }}
+      DOCKERHUB_PUBLISH_NAMESPACE: ${{ vars.DOCKERHUB_PUBLISH_NAMESPACE || 'cloudsmithbot' }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Check release inputs
+        env:
+          DOCKERHUB_PUBLISH_TOKEN: ${{ secrets.DOCKERHUB_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^cloudsmith-(repo|cli|dependency-firewall)-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
+            { echo "::error::Expected a known kit tag with a stable semantic version"; exit 1; }
+          [[ "$DOCKERHUB_PUBLISH_NAMESPACE" =~ ^[a-z0-9][a-z0-9_-]*$ ]] ||
+            { echo "::error::Set a valid Docker Hub namespace"; exit 1; }
+          [ -n "$DOCKERHUB_PUBLISH_USER" ] ||
+            { echo "::error::Set the DOCKERHUB_PUBLISH_USER secret"; exit 1; }
+          [ -n "$DOCKERHUB_PUBLISH_TOKEN" ] ||
+            { echo "::error::Set the DOCKERHUB_PUBLISH_TOKEN secret"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a release from main
+        run: git merge-base --is-ancestor HEAD origin/main
+
+      - name: Install sbx
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLI_ONLY: "1"
+        run: ./scripts/install-sbx.sh >> "$GITHUB_PATH"
+
+      - name: Validate release and verify signed source
+        id: kit
+        run: |
+          set -euo pipefail
+          kit="${TAG%-v*}"
+          version="${TAG##*-v}"
+          sbx kit validate "./$kit"
+          sbx kit inspect "./$kit" --json |
+            jq -e --arg kit "$kit" --arg version "$version" '.name == $kit and .version == $version' >/dev/null
+          sbx kit verify \
+            --certificate-identity "https://github.com/${REPOSITORY}/.github/workflows/sign.yml@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com "./$kit"
+          echo "name=$kit" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+        with:
+          version: "1.3.3"
+
+      - name: Authenticate to Docker Hub
+        env:
+          DOCKERHUB_PUBLISH_TOKEN: ${{ secrets.DOCKERHUB_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$DOCKERHUB_PUBLISH_TOKEN" |
+            docker login --username "$DOCKERHUB_PUBLISH_USER" --password-stdin
+
+      - name: Push the kit artifact
+        env:
+          KIT_DIR: ${{ steps.kit.outputs.name }}
+          KIT_VERSION: ${{ steps.kit.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p .release-tools
+          ref="docker.io/${DOCKERHUB_PUBLISH_NAMESPACE}/${KIT_DIR}-kit:v${KIT_VERSION}"
+          if oras manifest fetch --descriptor "$ref" > .release-tools/descriptor.json 2> .release-tools/registry-error; then
+            echo "::error::${ref} already exists. Release tags are immutable; cut a new version."
+            exit 1
+          elif ! grep -qiE 'manifest unknown|name unknown|MANIFEST_UNKNOWN|NAME_UNKNOWN|404 Not Found' .release-tools/registry-error &&
+               ! grep -Fxq "Error response from registry: failed to find \"$ref\": $ref: not found" .release-tools/registry-error; then
+            cat .release-tools/registry-error >&2
+            exit 1
+          fi
+          sbx kit push --sign "./${KIT_DIR}" "$ref"
+          digest=$(oras manifest fetch --descriptor "$ref" | jq -er '.digest')
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          sbx kit verify \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${ref%:*}@${digest}"
+          printf 'Published and verified %s@%s\n' "${ref%:*}" "$digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Log out of Docker Hub
+        if: always()
+        run: docker logout

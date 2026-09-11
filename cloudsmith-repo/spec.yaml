@@ -1,0 +1,182 @@
+schemaVersion: "2"
+version: "0.1.0"
+sourceURL: https://github.com/cloudsmith-io/cloudsmith-sbx-kits
+licenses:
+  - Apache-2.0
+kind: mixin
+name: cloudsmith-repo
+displayName: Cloudsmith repository
+description: Configures package clients for a Cloudsmith repository and enables authenticated Docker and raw downloads.
+
+# Arguments are substituted before YAML and shell parsing; keep patterns restrictive.
+args:
+  path:
+    default: /cloudsmith/cli
+    description: >-
+      Repository path: /ORG/REPO on *.cloudsmith.io, /REPO on a namespace-level
+      custom domain, or empty on a repository-level custom domain.
+      Defaults to Cloudsmith's public CLI repository.
+    pattern: '^(/[a-z0-9]([a-z0-9-]*[a-z0-9])?){0,2}$'
+  dl-host:
+    default: dl.cloudsmith.io
+    description: Download host for Python, raw, Maven, NuGet packages and blob redirects
+    pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+  redirect-host:
+    default: dl.cloudsmith.io
+    description: Additional authenticated download host for redirects and NuGet resources on a custom domain
+    pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+  npm-host:
+    default: npm.cloudsmith.io
+    description: npm registry host
+    pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+  go-host:
+    default: golang.cloudsmith.io
+    description: Go module proxy and checksum database host
+    pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+  cargo-host:
+    default: cargo.cloudsmith.io
+    description: Cargo sparse registry host
+    pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+  nuget-host:
+    default: nuget.cloudsmith.io
+    description: NuGet v3 feed host
+    pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+  docker-host:
+    default: docker.cloudsmith.io
+    description: Docker registry host
+    pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+
+permissions:
+  network:
+    allow:
+      - "${{ kit.args.dl-host }}"
+      - "${{ kit.args.redirect-host }}"
+      - "${{ kit.args.npm-host }}"
+      - "${{ kit.args.go-host }}"
+      - "${{ kit.args.cargo-host }}"
+      - "${{ kit.args.nuget-host }}"
+      - "${{ kit.args.docker-host }}"
+
+credentials:
+  # Explicit Bearer formatting avoids the Basic injection issue in sbx 0.42.x.
+  - service: cloudsmith-entitlement-token
+    description: Cloudsmith entitlement token (read-only, repository-scoped) for private repositories
+    required: false
+    apiKey:
+      name: CLOUDSMITH_ENTITLEMENT_TOKEN
+      proxyManaged: true
+      inject:
+        - domain: "${{ kit.args.dl-host }}"
+          header: Authorization
+          format: "Bearer %s"
+        - domain: "${{ kit.args.redirect-host }}"
+          header: Authorization
+          format: "Bearer %s"
+        - domain: "${{ kit.args.npm-host }}"
+          header: Authorization
+          format: "Bearer %s"
+        - domain: "${{ kit.args.go-host }}"
+          header: Authorization
+          format: "Bearer %s"
+        - domain: "${{ kit.args.cargo-host }}"
+          header: Authorization
+          format: "Bearer %s"
+        - domain: "${{ kit.args.nuget-host }}"
+          header: Authorization
+          format: "Bearer %s"
+        - domain: "${{ kit.args.docker-host }}"
+          header: Authorization
+          format: "Bearer %s"
+
+environment:
+  variables:
+    PIP_NO_INPUT: "1"
+    PIP_INDEX_URL: "https://${{ kit.args.dl-host }}/basic${{ kit.args.path }}/python/simple/"
+    UV_DEFAULT_INDEX: "https://${{ kit.args.dl-host }}/basic${{ kit.args.path }}/python/simple/"
+    NPM_CONFIG_REGISTRY: "https://${{ kit.args.npm-host }}${{ kit.args.path }}/"
+    YARN_NPM_REGISTRY_SERVER: "https://${{ kit.args.npm-host }}${{ kit.args.path }}/"
+    NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    # No direct fallback: a missing module must not bypass the repository.
+    GOPROXY: "https://${{ kit.args.go-host }}${{ kit.args.path }}/"
+    # Cargo requires a local token; the proxy replaces this placeholder.
+    CARGO_REGISTRIES_CLOUDSMITH_TOKEN: proxy-managed
+
+agentInstructions:
+  content: |
+    ## Cloudsmith repository
+
+    This kit configured the package clients for repository path
+    `${{ kit.args.path }}`:
+
+    - pip / uv: `PIP_INDEX_URL`, `UV_DEFAULT_INDEX`
+    - npm / Yarn Classic: `NPM_CONFIG_REGISTRY`; pnpm: `~/.npmrc`; Yarn Berry: `YARN_NPM_REGISTRY_SERVER` and proxy settings in `~/.yarnrc.yml`
+    - Go: `GOPROXY=https://${{ kit.args.go-host }}${{ kit.args.path }}/`, without direct fallback
+    - Cargo: `~/.cargo/config.toml` replaces crates.io with Cloudsmith
+    - Maven: `~/.m2/settings.xml` mirrors repositories to Cloudsmith
+    - NuGet: `~/.nuget/NuGet/NuGet.Config` contains one Cloudsmith source
+    - Docker: use `docker pull ${{ kit.args.docker-host }}${{ kit.args.path }}/IMAGE:TAG`; the kit does not rewrite image names
+    - Raw: use `https://${{ kit.args.dl-host }}/basic${{ kit.args.path }}/raw/names/NAME/versions/VERSION/FILE`
+
+    The proxy authenticates requests. Credential environment variables contain
+    placeholders. Do not put tokens in URLs or config, supply credentials to
+    tools, or run `docker login`. Raw `versions/latest/` redirects can expose
+    the entitlement token; use explicit versions.
+
+    Report failed downloads with ecosystem, package, version, host and status:
+    403 "quarantined" or "blocked" is a Cloudsmith policy decision;
+    403 "Blocked by network policy" is a sandbox network denial;
+    404 means missing content, an incorrect path or (on the Go host) bad auth;
+    401 means authentication failed. Do not include Location headers,
+    pre-signed URLs or tokens in reports.
+
+    Do not work around failures with public registries, direct URLs, git
+    dependencies, extra indexes or a direct GOPROXY fallback. Propose an
+    allowed version or ask the repository owner to check its upstreams and
+    policies. The dependency-firewall kit enforces only its named deny hosts.
+
+    Private Go modules need `GONOSUMDB=<module prefix>`. `GOPRIVATE` also
+    defaults `GONOPROXY` and can bypass Cloudsmith; if it is already set, use
+    `GONOPROXY=none` to keep module downloads on the configured proxy.
+    Project-level configuration can override these defaults. Report conflicting
+    configuration unless the user asks to migrate it. The cloudsmith-cli kit
+    provides the `cloudsmith` CLI.
+    Preserve sandbox-managed proxy variables, including `JAVA_TOOL_OPTIONS`
+    for Maven.
+
+setup:
+  install:
+    # HEAD avoids downloading a potentially large merged Python index.
+    - command: |
+        set -eu
+        URL='https://${{ kit.args.dl-host }}/basic${{ kit.args.path }}/python/simple/'
+        if [ '${{ kit.args.path }}' = /cloudsmith/cli ]; then
+          echo "[cloudsmith-repo] Using the public cloudsmith/cli repository. Set --kit-arg cloudsmith-repo.path=/ORG/REPO to select your repository." >&2
+        fi
+        code=$(curl -sS -I -o /dev/null --max-time 30 --retry 2 --retry-connrefused -w '%{http_code}' "$URL") || code=000
+        case "$code" in
+          200) ;;
+          401)
+            echo "[cloudsmith-repo] HTTP 401 from ${URL}: repository authentication failed. Run 'sbx secret set cloudsmith-entitlement-token' on the host, approve the credential binding, then recreate the sandbox." >&2
+            exit 1 ;;
+          403)
+            echo "[cloudsmith-repo] HTTP 403 from ${URL}: the token was rejected or the host is denied by sandbox policy. Check 'sbx policy log <sandbox>' and the repository token." >&2
+            exit 1 ;;
+          404)
+            echo "[cloudsmith-repo] HTTP 404 from ${URL}: check cloudsmith-repo.path (/ORG/REPO on *.cloudsmith.io, /REPO on a namespace custom domain, empty on a repository custom domain)." >&2
+            exit 1 ;;
+          000)
+            echo "[cloudsmith-repo] No response from ${URL}. Check cloudsmith-repo.dl-host and 'sbx policy log <sandbox>'." >&2
+            exit 1 ;;
+          *)
+            echo "[cloudsmith-repo] Unexpected HTTP ${code} from ${URL}. Check the host and path arguments." >&2
+            exit 1 ;;
+        esac
+      user: "0"
+      description: Verify the Cloudsmith Python index is reachable through the proxy
+    # pnpm reads the user npmrc rather than NPM_CONFIG_REGISTRY.
+    - command: |
+        set -eu
+        command -v npm >/dev/null || { echo "[cloudsmith-repo] npm is required in the base image to configure pnpm." >&2; exit 1; }
+        npm config set registry 'https://${{ kit.args.npm-host }}${{ kit.args.path }}/' --location=user
+      user: "1000"
+      description: Configure the agent's npmrc for pnpm
