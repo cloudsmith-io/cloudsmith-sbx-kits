@@ -108,10 +108,13 @@ keep the tags independent even when one pull request changes both.
 1. Bump `version:` in the kit's `spec.yaml`.
 2. Merge to `main`.
 3. Run the `Sign kits` workflow (`gh workflow run sign.yml`). It signs every
-   kit keyless through Sigstore, verifies each signature, and commits the
-   `kit.sig.bundle` sidecars. Signing must come before the tag: the signature
-   covers the exact bytes, so any later edit invalidates it.
-4. Tag the signing commit `<kit>-v<semver>` and push the tag.
+   kit keyless through Sigstore, verifies each signature, and opens a pull
+   request with the `kit.sig.bundle` sidecars. Signing must come before the
+   tag: the signature covers the exact bytes, so any later edit invalidates it.
+4. Squash-merge that pull request. The ruleset on `main` requires a pull
+   request and signed commits, so the workflow cannot push to `main` itself.
+   A squash merge is signed by GitHub and keeps the history linear.
+5. Tag the squashed commit `<kit>-v<semver>` and push the tag.
 
 Pushing the tag starts `.github/workflows/publish.yml`, which publishes the kit
 to Cloudsmith as an OCI artifact at

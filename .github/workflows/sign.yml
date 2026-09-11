@@ -7,12 +7,18 @@ name: Sign kits
 # Run this before tagging a release that changes any spec.yaml or files/. The
 # signature covers those exact bytes, so a later edit invalidates the committed
 # bundle. Tag only after the signing commit lands.
+#
+# The bundles arrive on main through a pull request, not a direct push. The
+# org ruleset on main requires a pull request and signed commits, and a push
+# from a runner satisfies neither. Squash-merge the pull request this opens:
+# GitHub signs the squash commit, which keeps main linear and signed.
 
 on:
   workflow_dispatch: {}
 
 permissions:
   contents: write
+  pull-requests: write
   id-token: write # mints the ambient OIDC token that keyless signing needs
 
 jobs:
@@ -52,11 +58,12 @@ jobs:
               "./${kit}"
           done
 
-      - name: Commit the signature bundles
+      - name: Open a pull request with the signature bundles
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
+          BASE: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -66,5 +73,16 @@ jobs:
             echo "No signature changes to commit."
             exit 0
           fi
+
+          branch="sign/kits-${RUN_ID}"
+          git checkout -b "$branch"
           git commit -m "Sign kits (keyless, bound to the sign workflow identity)"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" "HEAD:${BRANCH}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" "$branch"
+
+          gh pr create --repo "$REPOSITORY" --base "$BASE" --head "$branch" \
+            --title "Sign kits" \
+            --body "Signature bundles from the \`Sign kits\` workflow, run ${RUN_ID}.
+
+          Each signature is keyless (Sigstore Fulcio + Rekor), bound to this repository's \`sign.yml\` workflow identity, and was verified in the run before this pull request was opened.
+
+          Squash-merge, then tag the resulting commit \`<kit>-v<semver>\`. The signature covers the exact bytes of each \`spec.yaml\` and \`files/\`, so any edit after this merge invalidates it."
