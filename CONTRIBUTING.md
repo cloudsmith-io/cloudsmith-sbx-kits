@@ -35,7 +35,7 @@ sbx kit validate ./<kit>
 own credential store, separate from your day-to-day sbx:
 
 ```console
-sbx --app-name cloudsmith-sbx-kits-tck login
+sbx --app-name cloudsmith-kits-tck login
 ```
 
 The end-to-end run is the one that matters. It creates a real sandbox under the

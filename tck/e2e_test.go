@@ -22,7 +22,9 @@ import (
 // daemon keeps its own sandboxes, policy, cache and credentials, so the run
 // never touches the day-to-day sbx state. Keep it in sync with
 // scripts/test-kit-e2e.sh.
-const appName = "cloudsmith-sbx-kits-tck"
+//
+// sbx rejects an app name longer than 20 characters, so keep it short.
+const appName = "cloudsmith-kits-tck"
 
 func TestE2EKit(t *testing.T) {
 	kitPath := os.Getenv("KIT_UNDER_TEST")
