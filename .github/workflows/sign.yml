@@ -158,6 +158,14 @@ jobs:
           # gh pr checks fails when no checks are registered yet.
           sleep 60
           gh pr checks "$BRANCH" --repo "$REPOSITORY" --watch --fail-fast
+          git fetch --quiet origin main
+          if ! git diff --quiet "${HEAD_SHA}^" FETCH_HEAD -- '*/spec.yaml' '*/files/*'; then
+            gh pr close "$BRANCH" --repo "$REPOSITORY" \
+              --comment "A kit on main changed after this signature. The next release run signs the kits again."
+            gh api --method DELETE "repos/${REPOSITORY}/git/refs/heads/${BRANCH}"
+            echo "::error::A kit on main changed after this signature."
+            exit 1
+          fi
           gh pr merge "$BRANCH" --repo "$REPOSITORY" --admin --squash --match-head-commit "$HEAD_SHA"
 
       - name: Upload signed release bundle
