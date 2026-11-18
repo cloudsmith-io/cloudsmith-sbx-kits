@@ -103,8 +103,15 @@ Do not vendor or rebuild the harness because the CLI releases separately.
 
 `cloudsmith-cli` pins Cloudsmith's installer script in its spec. To move to a
 new installer, set `INSTALLER_VERSION` and take the matching `INSTALLER_SHA256`
-from that release's `SHA256SUMS`. To move the default CLI release, change the
-`cli-version` default.
+from that release's `SHA256SUMS`. To move the default CLI release, run
+`scripts/bump-cli-version.sh <version>`. The script also bumps the kit version
+and adds an entry to `cloudsmith-cli/CHANGELOG.md`. The `Bump Cloudsmith CLI`
+workflow runs it for each CLI release and merges the pull request when the
+checks pass. A new major CLI release needs a manual change.
+
+The `Release cloudsmith-cli kit` workflow releases the newest version in
+`cloudsmith-cli/CHANGELOG.md` when it has no tag. It signs the kit if the
+signature does not verify, then creates the tag and publishes the kit.
 
 
 ## Per-Kit README

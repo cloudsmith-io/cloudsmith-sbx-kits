@@ -3,6 +3,12 @@ name: Publish kit artifacts
 on:
   push:
     tags: ["*-v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing kit tag, e.g. cloudsmith-repo-v0.1.0
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -124,8 +130,9 @@ jobs:
           sbx kit push --sign "./${KIT_DIR}" "$ref"
           digest=$(oras manifest fetch --descriptor "$ref" | jq -er '.digest')
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          # The certificate names this workflow file, also when another workflow calls it.
           sbx kit verify \
-            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-identity "https://github.com/${REPOSITORY}/.github/workflows/publish.yml@${GITHUB_REF}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "${ref%:*}@${digest}"
           printf 'Published and verified %s@%s\n' "${ref%:*}" "$digest" >> "$GITHUB_STEP_SUMMARY"
