@@ -65,7 +65,7 @@ jobs:
           GH_TOKEN: ${{ secrets.CLOUDSMITH_BOT_TOKEN }}
           BOT_NAME: ${{ secrets.CLOUDSMITH_BOT_NAME }}
           BOT_EMAIL: ${{ secrets.CLOUDSMITH_BOT_EMAIL }}
-          BOT_SIGNING_KEY: ${{ secrets.CLOUDSMITH_BOT_SIGNING_KEY }}
+          BOT_SIGNING_KEY: ${{ secrets.CLOUDSMITH_BOT_SSH_SIGNING_KEY }}
           REPOSITORY: ${{ github.repository }}
           BASE: ${{ github.ref_name }}
           RUN_ID: ${{ github.run_id }}
@@ -75,7 +75,7 @@ jobs:
           : "${GH_TOKEN:?Set CLOUDSMITH_BOT_TOKEN}"
           : "${BOT_NAME:?Set CLOUDSMITH_BOT_NAME}"
           : "${BOT_EMAIL:?Set CLOUDSMITH_BOT_EMAIL}"
-          : "${BOT_SIGNING_KEY:?Set CLOUDSMITH_BOT_SIGNING_KEY}"
+          : "${BOT_SIGNING_KEY:?Set CLOUDSMITH_BOT_SSH_SIGNING_KEY}"
           umask 077
           signing_dir=$(mktemp -d)
           trap 'rm -f "$signing_dir/key" "$signing_dir/key.pub" "$signing_dir/allowed_signers"; rmdir "$signing_dir"' EXIT
