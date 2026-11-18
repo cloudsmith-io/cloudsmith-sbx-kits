@@ -17,7 +17,7 @@ on:
         required: true
       CLOUDSMITH_BOT_EMAIL:
         required: true
-      CLOUDSMITH_BOT_SIGNING_KEY:
+      CLOUDSMITH_BOT_SSH_SIGNING_KEY:
         required: true
   workflow_dispatch:
     inputs:

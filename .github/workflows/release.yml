@@ -95,7 +95,7 @@ jobs:
       CLOUDSMITH_BOT_TOKEN: ${{ secrets.CLOUDSMITH_BOT_TOKEN }}
       CLOUDSMITH_BOT_NAME: ${{ secrets.CLOUDSMITH_BOT_NAME }}
       CLOUDSMITH_BOT_EMAIL: ${{ secrets.CLOUDSMITH_BOT_EMAIL }}
-      CLOUDSMITH_BOT_SIGNING_KEY: ${{ secrets.CLOUDSMITH_BOT_SIGNING_KEY }}
+      CLOUDSMITH_BOT_SSH_SIGNING_KEY: ${{ secrets.CLOUDSMITH_BOT_SSH_SIGNING_KEY }}
 
   tag:
     name: Create the release tag
