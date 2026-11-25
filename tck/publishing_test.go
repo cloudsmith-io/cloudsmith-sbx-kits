@@ -46,17 +46,22 @@ func TestPublishingRegistryLookup(t *testing.T) {
 		{"publish-dockerhub.yml", "docker.io/example/cloudsmith-repo-kit:v0.1.0"},
 	} {
 		t.Run(publisher.workflow, func(t *testing.T) {
-			for _, trigger := range []string{"refs/heads/main", "refs/tags/cloudsmith-repo-v0.1.0"} {
-				t.Run(trigger, func(t *testing.T) {
-					workflowRef := "example/kits/.github/workflows/" + publisher.workflow + "@" + trigger
-					testPublishingRegistryLookup(t, publishingStep(t, publisher.workflow, "Push the kit artifact"), publisher.ref, workflowRef)
+			for _, trigger := range []struct{ caller, ref string }{
+				{publisher.workflow, "refs/heads/main"},
+				{publisher.workflow, "refs/tags/cloudsmith-repo-v0.1.0"},
+				{"release.yml", "refs/heads/main"},
+			} {
+				t.Run(trigger.caller+"@"+trigger.ref, func(t *testing.T) {
+					workflowRef := "example/kits/.github/workflows/" + trigger.caller + "@" + trigger.ref
+					identity := "https://github.com/example/kits/.github/workflows/" + publisher.workflow + "@" + trigger.ref
+					testPublishingRegistryLookup(t, publishingStep(t, publisher.workflow, "Push the kit artifact"), publisher.ref, workflowRef, trigger.ref, identity)
 				})
 			}
 		})
 	}
 }
 
-func testPublishingRegistryLookup(t *testing.T, script, ref, workflowRef string) {
+func testPublishingRegistryLookup(t *testing.T, script, ref, workflowRef, gitRef, identity string) {
 	t.Helper()
 	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	missing := `Error response from registry: failed to find "` + ref + `": ` + ref + `: not found`
@@ -78,7 +83,7 @@ func testPublishingRegistryLookup(t *testing.T, script, ref, workflowRef string)
 		{name: "unrelated-not-found", message: "credential helper: executable not found", status: "1"},
 		{name: "signing-failure", message: missing, status: "1", push: true, signFail: true},
 		{name: "verification-failure", message: missing, status: "1", push: true, verifyFail: true},
-		{name: "authorized-replacement", status: "0", push: strings.Contains(workflowRef, "/publish.yml@"), replace: true},
+		{name: "authorized-replacement", status: "0", push: strings.Contains(identity, "/publish.yml@"), replace: true},
 		{name: "replacement-auth-failure", message: "401 Unauthorized", status: "1", replace: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -107,7 +112,7 @@ case "$2" in
     ;;
   verify)
     [ "$#" = 7 ] && [ "$3" = --certificate-identity ] &&
-      [ "$4" = "https://github.com/$GITHUB_WORKFLOW_REF" ] &&
+      [ "$4" = "$EXPECTED_IDENTITY" ] &&
       [ "$5" = --certificate-oidc-issuer ] &&
       [ "$6" = https://token.actions.githubusercontent.com ] &&
       [ "$7" = "$EXPECTED_DIGEST_REF" ] || exit 1
@@ -141,6 +146,7 @@ printf 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
 				"DOCKERHUB_PUBLISH_NAMESPACE=example", "EXPECTED_REF="+ref,
 				"KIT_DIR=cloudsmith-repo", "KIT_VERSION=0.1.0",
 				"GITHUB_STEP_SUMMARY="+summary, "GITHUB_WORKFLOW_REF="+workflowRef,
+				"REPOSITORY=example/kits", "GITHUB_REF="+gitRef, "EXPECTED_IDENTITY="+identity,
 				"EXPECTED_DIGEST_REF="+digestRef, "VERIFIED="+verified,
 				"SIGN_FAIL="+strconv.FormatBool(tc.signFail), "VERIFY_FAIL="+strconv.FormatBool(tc.verifyFail),
 				"REPLACE_EXISTING="+strconv.FormatBool(tc.replace),

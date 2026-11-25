@@ -47,10 +47,14 @@ organization-governance rule.
 
 | Argument | Default | Value |
 | --- | --- | --- |
-| `cli-version` | `1.27.0` | A release number, or `latest` |
+| `cli-version` | The release in [`spec.yaml`](./spec.yaml) | A release number, or `latest` |
 
-Keep the default or pin another release for reproducible installs. `latest`
-resolves at install time even when the kit itself is pinned.
+The default is an exact CLI release, so installs are reproducible. Maintainers
+bump it to each new CLI release with the same major version and release a new
+kit version. [CHANGELOG.md](./CHANGELOG.md) names the release that each kit
+version pins. Pass another release number to pin a different release. `latest`
+is still accepted. It resolves at install time even when the kit itself is
+pinned.
 
 ## Authentication
 

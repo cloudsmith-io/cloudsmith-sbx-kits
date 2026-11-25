@@ -4,6 +4,21 @@ name: Sign kits
 # invalidate the signatures.
 
 on:
+  workflow_call:
+    inputs:
+      merge:
+        description: Squash-merge the signature pull request when its checks pass
+        type: boolean
+        default: false
+    secrets:
+      CLOUDSMITH_BOT_TOKEN:
+        required: true
+      CLOUDSMITH_BOT_NAME:
+        required: true
+      CLOUDSMITH_BOT_EMAIL:
+        required: true
+      CLOUDSMITH_BOT_SSH_SIGNING_KEY:
+        required: true
   workflow_dispatch:
     inputs:
       amend_release:
@@ -21,7 +36,7 @@ jobs:
   sign:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -61,6 +76,7 @@ jobs:
           done
 
       - name: Commit signatures and prepare delivery
+        id: commit
         env:
           GH_TOKEN: ${{ secrets.CLOUDSMITH_BOT_TOKEN }}
           BOT_NAME: ${{ secrets.CLOUDSMITH_BOT_NAME }}
@@ -119,6 +135,8 @@ jobs:
           git commit -m "Sign kits (keyless, bound to the sign workflow identity)"
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
             push "https://github.com/${REPOSITORY}.git" "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
           gh pr create --repo "$REPOSITORY" --base "$BASE" --head "$branch" \
             --title "Sign kits" \
@@ -127,6 +145,28 @@ jobs:
           Each signature is keyless (Sigstore Fulcio + Rekor), bound to this repository's \`sign.yml\` workflow identity, and was verified in the run before this pull request was opened.
 
           Squash-merge, then tag the resulting commit \`<kit>-v<semver>\`. The signature covers the exact bytes of each \`spec.yaml\` and \`files/\`, so any edit after this merge invalidates it."
+
+      - name: Merge the signature pull request
+        if: inputs.merge && steps.commit.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ secrets.CLOUDSMITH_BOT_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ steps.commit.outputs.branch }}
+          HEAD_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # gh pr checks fails when no checks are registered yet.
+          sleep 60
+          gh pr checks "$BRANCH" --repo "$REPOSITORY" --watch --fail-fast
+          git fetch --quiet origin main
+          if ! git diff --quiet "${HEAD_SHA}^" FETCH_HEAD -- '*/spec.yaml' '*/files/*'; then
+            gh pr close "$BRANCH" --repo "$REPOSITORY" \
+              --comment "A kit on main changed after this signature. The next release run signs the kits again."
+            gh api --method DELETE "repos/${REPOSITORY}/git/refs/heads/${BRANCH}"
+            echo "::error::A kit on main changed after this signature."
+            exit 1
+          fi
+          gh pr merge "$BRANCH" --repo "$REPOSITORY" --admin --squash --match-head-commit "$HEAD_SHA"
 
       - name: Upload signed release bundle
         if: inputs.amend_release
