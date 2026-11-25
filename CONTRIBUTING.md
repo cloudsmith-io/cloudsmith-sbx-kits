@@ -112,6 +112,9 @@ checks pass. A new major CLI release needs a manual change.
 The `Release cloudsmith-cli kit` workflow releases the newest version in
 `cloudsmith-cli/CHANGELOG.md` when it has no tag. It signs the kit if the
 signature does not verify, then creates the tag and publishes the kit.
+A later run skips a version that has a tag. If a publish job fails, re-run
+the failed jobs of that run. You can also run `Publish kit artifacts` or
+`Publish kits to Docker Hub` with the tag.
 
 
 ## Per-Kit README

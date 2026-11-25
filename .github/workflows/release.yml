@@ -54,7 +54,8 @@ jobs:
           status=0
           git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null || status=$?
           case "$status" in
-            0) echo "$tag is already released"; echo "released=true" >> "$GITHUB_OUTPUT" ;;
+            0) echo "::notice::$tag has a tag, so this run does not publish it. To retry a failed publish, re-run the failed jobs of its release run."
+               echo "released=true" >> "$GITHUB_OUTPUT" ;;
             2) echo "$tag is not released yet"; echo "released=false" >> "$GITHUB_OUTPUT" ;;
             *) exit "$status" ;;
           esac
