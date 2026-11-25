@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright 2026 Cloudsmith Ltd
 # Pins the default cli-version of the cloudsmith-cli kit to a new Cloudsmith
 # CLI release, bumps the patch version of the kit and records the release in
 # cloudsmith-cli/CHANGELOG.md. Prints the new kit version.

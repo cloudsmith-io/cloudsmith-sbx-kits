@@ -1,3 +1,5 @@
+// Copyright 2026 Cloudsmith Ltd
+
 package tck_test
 
 import (
