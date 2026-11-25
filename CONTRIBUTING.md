@@ -112,9 +112,14 @@ checks pass. A new major CLI release needs a manual change.
 The `Release cloudsmith-cli kit` workflow releases the newest version in
 `cloudsmith-cli/CHANGELOG.md` when it has no tag. It signs the kit if the
 signature does not verify, then creates the tag and publishes the kit.
-A later run skips a version that has a tag. If a publish job fails, re-run
-the failed jobs of that run. You can also run `Publish kit artifacts` or
-`Publish kits to Docker Hub` with the tag.
+A later run skips a version that has a tag. To recover from a failed publish
+job, read its log:
+
+- If the job failed before `sbx kit push`, re-run the failed jobs of that run.
+- If `Publish kit artifacts` failed after `sbx kit push`, run it with the tag
+  and `replace_existing`.
+- If `Publish kits to Docker Hub` failed after `sbx kit push`, release a new
+  kit version. Docker Hub kit tags are immutable.
 
 
 ## Per-Kit README
