@@ -12,6 +12,9 @@ on:
     paths:
       - cloudsmith-cli/CHANGELOG.md
       - cloudsmith-cli/kit.sig.bundle
+      # A kit change closes an open signature pull request, so release again.
+      - "*/spec.yaml"
+      - "*/files/**"
   workflow_dispatch: {}
 
 permissions: {}
